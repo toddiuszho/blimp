@@ -26,6 +26,7 @@ declare \
 declare -A bin_dependencies=([curl]='Web CLI' [git]='Git SCM CLI')
 # TODO verify bin dependencies present
 
+# TODO: move these to global/local cfg
 declare -A host_organization_aliases=(
   [@e11]='e11.github.com'
   [@i2]='i2.github.com'
@@ -105,9 +106,13 @@ blimp-populate-collection() {
 }
 
 blimp-import-usage() {
-  echo "Usage:" >&2
-  echo "  blimp import organization/repository" >&2
-  echo "  blimp import hostname/organization/repository" >&2
+  echo 'Usage:' >&2
+  echo '  blimp import [HOST='github.com'/]ORG/REPO [BRANCH]' >&2
+  echo '' >&2
+  echo 'Examples:' >&2
+  echo '  blimp import acme/tools' >&2
+  echo '  blimp import gitlab.com/techware/finder' >&2
+  echo '  blimp import exemplars/geospatial v1.9' >&2
 }
 
  blimp-import() {
