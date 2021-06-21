@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+
+#
+# Freshen global platforms
+# Freshen global envs
+# Freshen global platform-envs
+# Load local platforms
+# Load local envs
+# Load local platform-envs
+# blimp-lock.sh
+#
+
+declare BLIMP_CONTEXT_DIR='./gondola' BLIMP_DEFAULT_HOSTNAME='github.com' BLIMP_DEFAULT_FETCH_PROTOCOL='https'
+
+declare -A bin_dependencies=([curl]='Web CLI' [git]='Git SCM CLI')
+# TODO verify bin dependencies present
+
+declare -A host_organization_aliases=(
+  [@e11]='e11.github.com'
+  [@i2]='i2.github.com'
+)
+declare -A host_organization_remaps=(
+  [github.com/6FTS]='@e11'
+  [github.com/CNect]='@e11'
+  [github.com/ConcentricCompliance]='@e11'
+  [github.com/e11automaton]='@e11'
+  [github.com/e11community]='@e11'
+  [github.com/e11sandbox]='@e11'
+  [github.com/enginnering11]='@e11'
+  [github.com/intriguefortwo]='@i2'
+)
+
+log-error() {
+  echo "[ERROR] $*" >&2
+}
+
+blimp-find-context-dir-recursive() {
+  if [ "$(pwd)" = '/' ]
+}
+
+blimp-find-context-dir() {
+  local search_path='.'
+  for i in $(seq 1 1024); do
+    if [ -d "${search_path}/gondola" ]; then
+      BLIMP_CONTEXT_DIR='./gondola'
+      return 0
+    fi
+
+    if [ -d "${search_path}/.git" ]; then
+      log-error "No blimp context directory can be found!"
+      return 1
+    fi
+
+    search_path="${search_path}/.."
+    if ! [ -d "${search_path}" ]; then
+      log-error "No blimp context directory can be found!"
+      return 1
+    fi
+}
+
+blimp-init() {
+  curl -qsLk4 -o 'blimp' --url "https://github.com/toddiuszho/blimp/releases/stable/blimp" \
+    && chmod +x blimp
+}
+
+blimp-populate-collection() {
+  local collection_name="${1}"
+  local git_resource_path="${2}"
+}
+
+blimp-import-usage() {
+  echo "Usage:" >&2
+  echo "  blimp import organization/repository" >&2
+  echo "  blimp import hostname/organization/repository" >&2
+}
+
+blimp-import() {
+  local import_path="${1}"
+
+  if [ -z "${import_path}" ]; then
+    log-error "Empty import path"
+    blimp-import-usage
+    return 1
+
+  local import_project="${import_path##*/}"
+
+  if [ "${import_project}" = "${import_path}" ]; then
+    log-error "No discernible organization from [${import_path}]"
+    blimp-import-usage
+    return 1
+  fi
+
+  local import_host_org="${import_path%/*}"
+  local import_host="${import_host_org%/*}"
+  local import_org="${import_host_org#*/}"
+  if [ "${import_host}" = "${import_host_org}" ]; then
+    import_host="${BLIMP_DEFAULT_HOSTNAME}"
+    import_host_org="${BLIMP_DEFAULT_HOSTNAME}/${import_org}"
+  fi
+  
+  local remap="${!host_organization_remaps[$import_host_org]}"
+  if [ -n "${remap}" ]; then
+    log-info "Remapping [${import_host_org}] to [${remap}]"
+    if [ '@' = "${remap:0:1}" ]; then
+      old_remap="${remap}"
+      remap="${!host_organization_aliases[$old_remap]}"
+      if [ -z "${remap}" ]; then
+        log-error "Remap alias [${old_remap}] could not be found!"
+      else
+        log-info "Remapping [${import_host_org}] to [${remap}/${import_project}] via alias [${old_remap}]"
+        import_host="${remap}"
+      fi
+    else
+      import_host="${remap}"
+    fi
+  fi
+
+  local scratch_dir="${BLIMP_CONTEXT_DIR}/scratch/lib/${import_host}/${import_org}/${import_project}"
+  rm --preserve-root --recursive "${scratch_dir}"
+  mkdir -p "${scratch_dir}"
+
+  git clone \
+    "https://${import_host}/${import_org}/${import_project}.git" \
+    "${scratch_dir}"
+  import_version="0.0.0"
+  if [ -f "${scratch_dir}/VERSION" ]; then
+    import_version="$(cat "${scratch_dir}/VERSION")"
+    # TODO: validate version format
+  fi
+
+  local import_dir="${BLIMP_CONTEXT_DIR}/lib/${import_host}/${import_org}/${import_project}/${import_version}"
+  if ! [ -e "${import_dir}" ]; then
+    mkdir -p "${import_dir}"
+    cp -R "${scratch_dir}/"* "${import_dir}/"
+  fi
+}
+
+
+blimp-start() {
+  blimp-find-context-dir
+}
+
+blimp-start
+if [ $? -ne 0 ]; then
+  exit 1
+fi
+
+if [ "${1}" = 'import' ]; then
+  shift 1
+  blimp-import "$@"
+  exit $?
+else
+  log-error "Unknown command [${1}]"
+fi
