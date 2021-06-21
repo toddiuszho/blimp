@@ -34,6 +34,10 @@ log-error() {
   echo "[ERROR] $*" >&2
 }
 
+log-warn() {
+  echo "[WARN] $*" >&2
+}
+
 blimp-find-context-dir-recursive() {
   if [ "$(pwd)" = '/' ]
 }
@@ -59,8 +63,14 @@ blimp-find-context-dir() {
 }
 
 blimp-init() {
-  curl -qsLk4 -o 'blimp' --url "https://github.com/toddiuszho/blimp/releases/stable/blimp" \
-    && chmod +x blimp
+  # ! [ -f ./blimp ] && \
+  #   curl -qsLk4 -o './blimp' --url "https://github.com/toddiuszho/blimp/releases/stable/blimp" && \
+  #   chmod +x ./blimp
+  ! [ -d ./gondola ] && mkdir -p ./gondola
+  declare -a subs=(lib platform env platform-env scratch local-platform local-env local-platform-env)
+  for sub in "${subs[@]}"; do
+    ! [ -d ".gondola/${sub}" ] && mkdir -p "./gondola/${sub}"
+  done
 }
 
 blimp-populate-collection() {
@@ -115,30 +125,44 @@ blimp-import() {
     fi
   fi
 
-  local scratch_dir="${BLIMP_CONTEXT_DIR}/scratch/lib/${import_host}/${import_org}/${import_project}"
+  local import_resolved_path="${import_host}/${import_org}/${import_project}"
+  local scratch_dir="${BLIMP_CONTEXT_DIR}/scratch/lib/${import_resolved_path}"
   rm --preserve-root --recursive "${scratch_dir}"
   mkdir -p "${scratch_dir}"
 
   git clone \
-    "https://${import_host}/${import_org}/${import_project}.git" \
+    "https://${import_resolved_path}.git" \
     "${scratch_dir}"
   import_version="0.0.0"
   if [ -f "${scratch_dir}/VERSION" ]; then
     import_version="$(cat "${scratch_dir}/VERSION")"
     # TODO: validate version format
+  else
+    log-warn "No VERSION file could be found for ${import_resolved_path}"
   fi
 
-  local import_dir="${BLIMP_CONTEXT_DIR}/lib/${import_host}/${import_org}/${import_project}/${import_version}"
+  local import_dir="${BLIMP_CONTEXT_DIR}/lib/${import_resolved_path}"
   if ! [ -e "${import_dir}" ]; then
     mkdir -p "${import_dir}"
     cp -R "${scratch_dir}/"* "${import_dir}/"
   fi
-}
 
+  local package_file="${import_dir}/package.sh"
+  if [ -f "${package_file}" ]; then
+    . "${package_file}"
+  else
+    log-warn "No package file to import for ${import_resolved_path}"
+  fi
+}
 
 blimp-start() {
   blimp-find-context-dir
 }
+
+if [ "${1}" = 'init' ]; then
+  blimp-init
+  exit $?
+fi
 
 blimp-start
 if [ $? -ne 0 ]; then
