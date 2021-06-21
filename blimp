@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-export BLIMP_VERSION='0.0.0'
+export BLIMP_VERSION='0.0.1'
 
 #
 # Freshen global platforms
@@ -23,7 +23,17 @@ declare \
   COL_RED="\033[31m" \
   COL_YELLOW="\033[33m"
 
-declare -A bin_dependencies=([curl]='Web CLI' [git]='Git SCM CLI')
+declare -i \
+  LOG_LEVEL_FATAL=0 \
+  LOG_LEVEL_ERROR=10 \
+  LOG_LEVEL_WARN=100 \
+  LOG_LEVEL_INFO=1000 \
+  LOG_LEVEL_DEBUG=10000 \
+  LOG_LEVEL_TRACE=100000
+
+declare -i LOG_LEVEL=$LOG_LEVEL_DEBUG
+
+declare -A bin_dependencies=([curl]='Web CLI' [git]='Git SCM CLI' [jq]='JSON manipulation')
 # TODO verify bin dependencies present
 
 # TODO: move these to global/local cfg
@@ -43,15 +53,27 @@ declare -A host_organization_remaps=(
 )
 
 log-error() {
-  echo -e "[${COL_RED}ERROR${COL_CLEAR}] $*" >&2
+  [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ] && echo -e "[${COL_RED}ERROR${COL_CLEAR}] $*" >&2
+}
+
+log-is-info-enabled() {
+  [ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]
 }
 
 log-info() {
-  echo -e "[${COL_MAGENTA}INFO${COL_CLEAR}] $*" >&2
+  [ $LOG_LEVEL -ge $LOG_LEVEL_INFO ] && echo -e "[${COL_MAGENTA}INFO${COL_CLEAR}] $*" >&2
+}
+
+log-is-debug-enabled() {
+  [ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]
+}
+
+log-debug() {
+  [ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ] && echo -e "[${COL_BLUE}DEBUG${COL_CLEAR}] $*" >&2
 }
 
 log-warn() {
-  echo -e "[${COL_YELLOW}WARN${COL_CLEAR}] $*" >&2
+  [ $LOG_LEVEL -ge $LOG_LEVEL_WARN ] && echo -e "[${COL_YELLOW}WARN${COL_CLEAR}] $*" >&2
 }
 
 blimp-colors() {
@@ -107,17 +129,70 @@ blimp-populate-collection() {
 
 blimp-import-usage() {
   echo 'Usage:' >&2
-  echo '  blimp import [HOST='github.com'/]ORG/REPO [BRANCH]' >&2
+  echo '  blimp import [HOST='github.com'/]ORG/REPO [--branch=BRANCH] [--commit=COMMIT] [--clone-debug] [--clone-verbose] [--release=RELEASE]' >&2
   echo '' >&2
   echo 'Examples:' >&2
   echo '  blimp import acme/tools' >&2
   echo '  blimp import gitlab.com/techware/finder' >&2
-  echo '  blimp import exemplars/geospatial v1.9' >&2
+  echo '  blimp import exemplars/geospatial --release=v1.9' >&2
 }
 
- blimp-import() {
-  local import_path="${1}"
-  local explicit_version="${2}"
+lopt-error-no-value-no-default() {
+  local context="${1}"
+  local lopt_key="${2}"
+  log-error "Command [${context}] tried to use [--${lopt_name}] option without any specified value or set default!"
+}
+
+is-true() {
+  [ "$1" = 'yes' ] || [ "$1" = 'true' ] || [ "$1" = 'on' ]
+}
+
+blimp-import() {
+  declare -i do_clone=1 do_release=0
+  declare -a pos_args=()
+  declare -a lopt_seen=()
+  declare -A lopt_defaults=(
+    ['branch']=''
+    ['clone-debug']='true'
+    ['clone-verbose']='true'
+    ['commit']=''
+    ['decompress']='true'
+    ['release']=''
+  )
+  if log-is-debug-enabled; then
+    for key in "${!lopt_defaults[@]}"; do
+      log-debug "k=[$key] v=[${lopt_defaults[$key]}]"
+    done
+  fi
+
+  for arg in "$@"; do
+    if [ "${arg:0:2}" = '--' ]; then
+      local dashless="${arg#--}"
+      local lopt_name="${dashless%%=*}"
+      local lopt_value="${dashless#*=}"
+      log-debug "d=[${dashless}] n=[${lopt_name}] v=[${lopt_value}]"
+      if [ "${lopt_value}" = "${dashless}" ]; then
+        local lopt_default_lookup="${lopt_defaults[$lopt_name]}"
+        log-debug "l=[${lopt_default_lookup}]"
+        if [ -n "${lopt_default_lookup}" ]; then
+          lopt_value="${lopt_default_lookup}"
+        else
+          lopt-error-no-value-no-default 'blimp import' "${lopt_name}"
+          return 1
+        fi
+      fi
+      lopt_seen+=("${lopt_name}")
+      local lopt_key="${lopt_name//-/_}"
+      log-debug "Adding [--${lopt_name}]=[${lopt_value}] to [blimp_import_${lopt_key}]"
+      eval "blimp_import_${lopt_key}=\"${lopt_value}\""
+      local peek="blimp_import_${lopt_key}"
+      log-debug "Testing lopt [${lopt_name}] = [${!peek}]"
+    else
+      pos_args+=("${arg}")
+    fi
+  done
+
+  local import_path="${pos_args[0]}"
  
   if [ -z "${import_path}" ]; then
     log-error "Empty import path"
@@ -131,6 +206,39 @@ blimp-import-usage() {
     log-error "No discernible organization from [${import_path}]"
     blimp-import-usage
     return 1
+  fi
+
+  declare -a clone_options=()
+  declare -i validation_problems=0
+
+  if [ -n "${blimp_import_release}" ]; then
+    do_release=0
+    if [ -n "${blimp_import_branch}" ]; then
+      log-error "Cannot use [--branch] option while using [--release] option!"
+      validation_problems=$(( $validation_problems + 1 ))
+    fi
+    if [ -n "${blimp_import_commit}" ]; then
+      log-error "Cannot use [--commit] option while using [--release] option!"
+      validation_problems=$(( $validation_problems + 1 ))
+    fi
+  fi
+  if [ -n "${blimp_import_commit}" ]; then
+    do_clone=0
+    do_release=1
+  else
+    clone_options+=('--depth=1')
+  fi
+  if [ -n "${blimp_import_branch}" ]; then
+    do_clone=0
+    do_release=1
+    clone_options+=("--branch=${blimp_import_branch}")
+  fi
+  if ! is-true "${blimp_import_clone_verbose}"; then
+    clone_options+=('--quiet')
+  fi
+
+  if [ $validation_problems -gt 0 ]; then
+    exit $validation_problems
   fi
  
   local import_host_org="${import_path%/*}"
@@ -162,41 +270,56 @@ blimp-import-usage() {
   local scratch_dir="${BLIMP_CONTEXT_DIR}/scratch/lib/${import_resolved_path}"
   [ -n "${scratch_dir}" ] && [ "${scratch_dir}" != '/' ] && rm -rf "${scratch_dir}"
   mkdir -p "${scratch_dir}"
- 
-  # TODO: verbose to not quietly clone
-  # TODO: import by branch, a diff way to specify version
-  # TODO: clone debug mode. don't zap .git
-  # TODO: clone deep mode. don't do depth=1
-  clone_options=()
-  if [ -n "${explicit_version}" ]; then
-    log-info "Using explicit version [${explicit_version}]"
-    clone_options+=("--branch=${explicit_version}")
+
+  # GH release secret sauce: curl -sLH 'Accept: application/vnd.github.v3+json' "https://api.github.com/repos/${ORG}/${REPO}/releases/tags/${VERSION}" | jq -Mr '.assets[] | .browser_download_url' | xargs -L1 -I{} curl -LJOs --url {}
+  # instead of "tags/${VERSION}" can do just 'latest'
+  if [ $do_release -eq 0 ]; then
+    [ 0 -eq 0 ]
+    if [ $? -ne 0 ]; then
+      if [ -z "${blimp_import_release}" ]; then
+        log-info "No latest release. Let's try latest from default branch."
+        do_clone=0
+      fi
+    fi
   fi
-  git clone \
-    --quiet \
-    --depth=1 \
-    "${clone_options[@]}" \
-    "https://${import_resolved_path}.git" \
-    "${scratch_dir}"
-  if [ $? -ne 0 ]; then
-    log-error "Could not clone [${import_resolved_path}]"
-    return 1
-  fi
-  if [ -d "${scratch_dir}/.git" ]; then
-    rm -rf "${scratch_dir}/.git"
-  fi
-  if [ -f "${scratch_dir}/.gitignore" ]; then
-    rm -rf "${scratch_dir}/.gitignore"
+
+  if [ $do_clone -eq 0 ]; then
+    log-debug "gco=[${clone_options[@]}]"
+    git clone \
+      "${clone_options[@]}" \
+      "https://${import_resolved_path}.git" \
+      "${scratch_dir}"
+    if [ $? -ne 0 ]; then
+      log-error "Could not clone [${import_resolved_path}]"
+      return 1
+    fi
+    if is-true "${blimp_import_commit}"; then
+      git checkout "${blimp_import_commit}"
+      if [ $? -ne 0 ]; then
+        log-error "Could not switch to commit [${blimp_import_commit}]"
+      return 1
+    fi
+    fi
+    if ! is-true "${blimp_import_clone_debug}"; then
+      if [ -d "${scratch_dir}/.git" ]; then
+        rm -rf "${scratch_dir}/.git"
+      fi
+      if [ -f "${scratch_dir}/.gitignore" ]; then
+        rm -rf "${scratch_dir}/.gitignore"
+      fi
+    fi
   fi
 
   local import_version='0.0.0'
-  if [ -n "${explicit_version}" ]; then
-    import_version="${explicit_version}"
-  elif [ -f "${scratch_dir}/VERSION" ]; then
-    import_version="$(cat "${scratch_dir}/VERSION")"
-    # TODO: validate version format
+  if [ -n "${blimp_import_release}" ]; then
+    import_version="${blimp_import_release}"
+  elif [ -n "${blimp_import_commit}" ]; then
+    import_version="${blimp_import_commit}"
+  elif [ -n "${blimp_import_branch}" ]; then
+    import_version="${blimp_import_branch}"
   else
-    log-warn "No VERSION could be found for ${import_resolved_path}"
+    # TODO: how does latest release determine ver? latest pull default branch determine ver?
+    import_version="needs_to_be_calculated"
   fi
  
   local import_dir="${BLIMP_CONTEXT_DIR}/lib/${import_resolved_path}/${import_version}"
@@ -205,6 +328,7 @@ blimp-import-usage() {
     cp -R "${scratch_dir}/" "${import_dir}/"
     local package_file="${import_dir}/package.sh"
     if [ -f "${package_file}" ]; then
+      # TODO chroot
       . "${package_file}"
     else
       log-warn "No package file to import for ${import_resolved_path}"
